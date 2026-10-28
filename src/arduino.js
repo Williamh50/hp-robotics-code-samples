@@ -1,0 +1,18 @@
+/** Arduino export primitives. Independent from the DOM. */
+export function validateServoMappings(settings){
+ if(!Array.isArray(settings)||settings.length!==4) throw Error('Exactly four servo mappings required');
+ const pins=new Set();
+ return settings.map((c,i)=>{
+  const {pin,low,high,reversed}=c;
+  if(!Number.isInteger(pin)||pin<2||pin>13||pins.has(pin)) throw Error('Servo pins must be distinct integers from 2 to 13');
+  pins.add(pin);
+  if(!Number.isInteger(low)||!Number.isInteger(high)||low<0||low>180||high<0||high>180)throw Error('Servo end angles must be between 0 and 180');
+  return {pin,low,high,reversed:!!reversed};
+ });
+}
+export function angleToServo(angle,setting){
+ let t=Math.min(1,Math.max(0,(angle+90)/180));
+ if(setting.reversed)t=1-t;
+ return Math.min(180,Math.max(0,Math.round(setting.low+t*(setting.high-setting.low))));
+}
+export function buildSketch(settings,poses){let safePoses=poses.map(p=>({...p,angles:p.angles.map(a=>Math.round(a))}));const rows=safePoses.map(p=>`  {{${p.angles.join(', ')}}, ${p.ms}}`).join(',\n');return `// HP Robotics Control Console v31 — Arduino Servo sequence. Generated offline.\n// Upload using Arduino IDE. Only sends motion after serial RUN at 115200 baud.\n// IMPORTANT: verify wiring and physical limits. Keep an emergency power disconnect available.\n#include <Servo.h>\nconst uint8_t N = 4;\nconst uint8_t servoPins[N] = {${settings.map(c=>c.pin).join(', ')}};\nconst int servoAtMinus90[N] = {${settings.map(c=>c.low).join(', ')}};\nconst int servoAtPlus90[N] = {${settings.map(c=>c.high).join(', ')}};\nconst bool reversedDir[N] = {${settings.map(c=>c.reversed?'true':'false').join(', ')}};\nconst uint16_t POSE_COUNT = ${safePoses.length};\nstruct Pose { int16_t angle[N]; uint16_t durationMs; };\nconst Pose poses[] = {\n${rows||'  {{0, 0, 0, 0}, 2000} // placeholder; no poses exported'}\n};\nServo servos[N];\nfloat current[N] = {0, 0, 0, 0};\nfloat startAngle[N];\nuint16_t stepIndex = 0;\nunsigned long stepStart = 0, lastWrite = 0;\nbool running = false, attached = false;\nint toServo(int joint, float angle) {\n  float t = constrain((angle + 90.0f) / 180.0f, 0.0f, 1.0f);\n  if (reversedDir[joint]) t = 1.0f - t;\n  return constrain(lroundf(servoAtMinus90[joint] + t * (servoAtPlus90[joint] - servoAtMinus90[joint])), 0L, 180L);\n}\nvoid writeAngles() { for (int i=0; i<N; ++i) servos[i].write(toServo(i, current[i])); }\nvoid startRun() {\n  if (POSE_COUNT == 0) { Serial.println(F("No poses")); return; }\n  if (!attached) {\n    // Initializing servos may move the arm immediately to the assumed 0-degree pose.\n    for (int i=0; i<N; ++i) { servos[i].write(toServo(i,current[i])); servos[i].attach(servoPins[i]); }\n    attached=true;\n  }\n  stepIndex=0; for (int i=0; i<N; ++i) startAngle[i]=current[i];\n  stepStart=millis(); running=true; Serial.println(F("RUNNING"));\n}\nvoid setup() { Serial.begin(115200); Serial.println(F("READY: RUN or STOP. No movement until RUN.")); }\nvoid loop() {\n  if (Serial.available()) {\n    String cmd=Serial.readStringUntil('\\n'); cmd.trim(); cmd.toUpperCase();\n    if (cmd=="STOP") { running=false; Serial.println(F("STOPPED")); }\n    else if (cmd=="RUN") startRun();\n  }\n  if (!running) return;\n  unsigned long now=millis();\n  const Pose &p=poses[stepIndex];\n  float t=constrain((float)(now-stepStart)/(float)p.durationMs,0.0f,1.0f);\n  float u=t*t*(3.0f-2.0f*t);\n  for(int i=0;i<N;++i) current[i]=startAngle[i]+(p.angle[i]-startAngle[i])*u;\n  if(now-lastWrite>=20 || t>=1.0f){ writeAngles(); lastWrite=now; }\n  if(t>=1.0f) {\n    ++stepIndex;\n    if(stepIndex>=POSE_COUNT){ running=false; Serial.println(F("DONE")); }\n    else { for(int i=0;i<N;++i) startAngle[i]=current[i]; stepStart=now; }\n  }\n}\n`}
